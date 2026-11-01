@@ -40,6 +40,61 @@ class OrderSmokeTests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertEqual(self.service.catalog(), before)
 
+    def test_place_order_records_history_and_stock_changes(self):
+        """Normal behavior: a valid order is saved with the expected ID and reduces stock."""
+        order = self.service.place_order("regular", [{"product_id": "notebook", "quantity": 2}])
+
+        self.assertEqual(order["order_id"], "ORD-0001")
+        self.assertEqual(order["status"], "placed")
+        self.assertEqual(order["total_cents"], 1000)
+        self.assertEqual(self.service.catalog()[0]["stock"], 18)
+        self.assertEqual(self.service.list_orders(), [order])
+
+    def test_empty_collection_and_zero_quantity_are_rejected(self):
+        """Boundary behavior: empty collections and quantities below the minimum are invalid."""
+        with self.assertRaisesRegex(ValueError, "at least one item"):
+            self.service.quote("regular", [])
+
+        with self.assertRaisesRegex(ValueError, "Quantity must be an integer from 1 to 99"):
+            self.service.quote("regular", [{"product_id": "notebook", "quantity": 0}])
+
+    def test_invalid_request_does_not_change_saved_state(self):
+        """Invalid behavior: bad input must raise ValueError without mutating the store."""
+        before = self.service.store.load()
+
+        with self.assertRaisesRegex(ValueError, "Unknown product"):
+            self.service.place_order("regular", [{"product_id": "ghost-item", "quantity": 1}])
+
+        self.assertEqual(self.service.store.load(), before)
+        self.assertEqual(self.service.list_orders(), [])
+
+    def test_quote_does_not_reserve_stock_and_cancellation_restores_it(self):
+        """Important preserved behavior: quotes are read-only, and cancellation restores stock."""
+        before_quote = self.service.catalog()
+        quote = self.service.quote("regular", [{"product_id": "mug", "quantity": 1}])
+
+        self.assertEqual(quote["total_cents"], 1500)
+        self.assertEqual(self.service.catalog(), before_quote)
+
+        order = self.service.place_order("regular", [{"product_id": "mug", "quantity": 1}])
+        cancelled = self.service.cancel_order(order["order_id"])
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(self.service.catalog(), before_quote)
+
+    def test_cancelled_order_stays_in_history_and_next_order_number_advances(self):
+        """Important preserved behavior: cancelled orders remain recorded and IDs are never reused."""
+        first = self.service.place_order("regular", [{"product_id": "mug", "quantity": 1}])
+        self.service.cancel_order(first["order_id"])
+
+        second = self.service.place_order("regular", [{"product_id": "notebook", "quantity": 1}])
+
+        self.assertEqual(first["order_id"], "ORD-0001")
+        self.assertEqual(second["order_id"], "ORD-0002")
+        self.assertEqual(len(self.service.list_orders()), 2)
+        self.assertEqual(self.service.list_orders()[0]["status"], "cancelled")
+        self.assertEqual(self.service.list_orders()[1]["status"], "placed")
+
 
 if __name__ == "__main__":
     unittest.main()
